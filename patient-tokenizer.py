@@ -252,6 +252,48 @@ def _double_metaphone(name: str) -> Tuple[str, str]:
 
 
 ###############################################################################
+#                         Bloom-filter helpers                       #
+###############################################################################
+
+BLOOM_M = 256           # bits per Bloom filter (= 32 bytes → 64-hex-chars)
+BLOOM_K = 4             # hash functions
+_BLOOM_SALT = b"PT_BLOOM"   # constant domain separator; NOT the secret salt
+
+
+def _clean_name(name: str | None) -> str:
+    """Accent-strip, upper-case, drop non-letters."""
+    if not name:
+        return ""
+    cleaned = _strip_accents(name).upper()
+    return re.sub(r"[^A-Z]", "", cleaned)
+
+
+def _bloom_encode(cleaned_name: str) -> str:
+    """
+    Deterministic Bloom filter of all 2-grams in *cleaned_name*.
+    Returns a fixed-width hex string (64 chars for m=256).
+    """
+    if not cleaned_name:
+        return "0" * (BLOOM_M // 4)
+
+    # 2-grams; fall back to full string if len < 2
+    grams = (
+        [cleaned_name[i : i + 2] for i in range(len(cleaned_name) - 1)]
+        or [cleaned_name]
+    )
+
+    bits = 0
+    for gram in grams:
+        for k in range(BLOOM_K):
+            data = _BLOOM_SALT + gram.encode() + bytes([k])
+            h = hashlib.blake2b(data, digest_size=4).digest()   # 32-bit digest
+            pos = int.from_bytes(h, "big") % BLOOM_M
+            bits |= 1 << pos
+
+    return f"{bits:0{BLOOM_M//4}x}"
+
+
+###############################################################################
 #                             PatientTokenizer                                #
 ###############################################################################
 
@@ -329,26 +371,26 @@ class PatientTokenizer:
         zipcode: str | int | None,
     ) -> str:
         """
-        Build the canonical representation that finally gets hashed.
+        Build the canonical representation fed into HMAC.
 
         We now include:
-            • exactised first / last name
-            • their Soundex codes  – ≈ phonetic back-up
-            • canonical DOB  (zero-filled)
-            • one-char sex  (m / f / o / "")
+            • CLEAN   first / last name   (exact, ASCII, no punctuation)
+            • BLOOM   first / last name   (256-bit q-gram filter → 64-hex-char)
+            • canonical DOB
+            • 1-char sex
             • ZIP-3
-        Putting both the exact and fuzzy versions side-by-side increases
-        recall with only a negligible collision risk once everything is fed
-        through SHA-256.
         """
-        fn_exact, fn_sdx = _canonical_name(first_name)
-        ln_exact, ln_sdx = _canonical_name(last_name)
+        fn_clean = _clean_name(first_name)
+        ln_clean = _clean_name(last_name)
+
+        fn_bloom = _bloom_encode(fn_clean)
+        ln_bloom = _bloom_encode(ln_clean)
 
         parts = (
-            fn_exact,
-            ln_exact,
-            fn_sdx,
-            ln_sdx,
+            fn_clean,
+            ln_clean,
+            fn_bloom,
+            ln_bloom,
             _canonical_dob(dob),
             _normalise_sex(sex),
             _normalise_zip(zipcode),
