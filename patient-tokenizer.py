@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import hmac
 import json
 import os
 import random
@@ -33,6 +34,12 @@ from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+
+# Attempt to import an external Double-Metaphone implementation.
+try:
+    from metaphone import doublemetaphone as _dm
+except ModuleNotFoundError:         # library not installed → silent fallback
+    _dm = None
 
 ###############################################################################
 # -------------------------  Public Name Resources  --------------------------
@@ -195,36 +202,53 @@ def _canonical_dob(dob: str | date | datetime | None) -> str:
 
 def _canonical_name(name: str | None) -> Tuple[str, str]:
     """
-    Returns (NAME_UPPER, SOUNDEX).  
-    Steps:
-        • strip titles / suffixes (MR, DR, JR, III …)
-        • strip accents + punctuation
-        • collapse whitespace
-        • uppercase
-        • replace common nick-names
+    Returns (EXACT, FUZZY) where
+        EXACT = fully normalised spelling
+        FUZZY = Double-Metaphone primary if available,
+                otherwise Soundex (4 chars).
     """
     if not name:
-        return ("", "")
+        return "", ""
 
-    n = name.upper()
-    n = re.sub(r"\b(MR|MRS|MS|DR|PROF)\.?\s+", "", n)
-    n = re.sub(r"\b(JR|SR|II|III|IV|V)\b\.?", "", n)
-    n = _strip_accents(n)
-    n = re.sub(r"[^A-Z\s]", " ", n)
-    n = re.sub(r"\s{2,}", " ", n).strip()
-    n = NICKNAMES.get(n, n)  # nick-name map
-    return (n, _soundex(n))
+    # 1. ASCII-ise & upper-case
+    cleaned = _strip_accents(name).upper()
+
+    # 2. remove punctuation / whitespace
+    cleaned = re.sub(r"[^A-Z]", "", cleaned)
+
+    # 3. nick-name expansion
+    cleaned = NICKNAMES.get(cleaned, cleaned)
+
+    # 4. fuzzy code
+    dm1, _ = _double_metaphone(cleaned)
+    fuzzy = dm1 or _soundex(cleaned)
+
+    return cleaned, fuzzy
 
 
-def _secure_hash(canonical: str, salt: bytes, pepper: bytes | None = None) -> str:
-    h = hashlib.sha256()
-    h.update(salt)
-    h.update(canonical.encode("utf-8"))
-    if pepper:
-        h.update(pepper)
-    digest = h.digest()  # 32 bytes
-    # 256 bits → 52 base32 chars. 32 chars is enough entropy for linking.
-    return base64.b32encode(digest).decode("ascii")[:32]
+def _secure_hash(msg: str, key: bytes | str, pepper: bytes | str | None = b"") -> str:
+    """
+    HMAC-SHA256 → Base32   (first 160 bits = 32 chars)
+
+    • `key` is the secret salt (bytes or str)  
+    • `pepper` may optionally be XOR'ed in by the caller
+    """
+    if pepper is None:
+        pepper = b""
+    if isinstance(pepper, str):
+        pepper = pepper.encode()
+    if isinstance(key, str):
+        key = key.encode()
+    digest = hmac.new(key, msg.encode() + pepper, hashlib.sha256).digest()
+    return base64.b32encode(digest).decode()[:32]
+
+
+def _double_metaphone(name: str) -> Tuple[str, str]:
+    """
+    Returns (primary, secondary) Double-Metaphone codes.
+    Falls back to ("", "") if the `metaphone` package isn't available.
+    """
+    return _dm(name) if _dm else ("", "")
 
 
 ###############################################################################
@@ -254,12 +278,17 @@ class PatientTokenizer:
         if isinstance(secret_salt, bytes):
             self.salt = secret_salt
         elif isinstance(secret_salt, str) and secret_salt.startswith("env:"):
-            env_var = secret_salt.split(":", 1)[1]
-            self.salt = os.environ[env_var].encode("utf-8")
+            self.salt = os.environ[secret_salt[4:]].encode()
         else:
-            self.salt = str(secret_salt).encode("utf-8")
+            self.salt = secret_salt.encode() if isinstance(secret_salt, str) else secret_salt
 
-        self.pepper = pepper
+        # Normalise pepper so it is ALWAYS bytes (never None/str)
+        if pepper is None:
+            self.pepper = b""
+        elif isinstance(pepper, str):
+            self.pepper = pepper.encode()
+        else:
+            self.pepper = pepper
 
     # --------------------------------------------------------------------- #
     #                   ---------  PUBLIC API  ---------                    #
@@ -363,7 +392,7 @@ def _download_public_lists() -> Tuple[List[str], List[str]]:
         with open(local_census_csv, newline="", encoding="utf-8") as fh:
             rdr = csv.DictReader(fh)
             for row in rdr:
-                name_val = row.get("name") or row.get("NAME")
+                name_val = row.get("NAME") or row.get("name")
                 if name_val:
                     last_names.append(name_val.upper())
 
