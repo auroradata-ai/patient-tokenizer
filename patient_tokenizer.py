@@ -1,5 +1,5 @@
 """
-Patient Tokenizer 
+Patient Tokenizer
 -----------------------------------------
 
 Usage (minimal):
@@ -17,28 +17,27 @@ Usage (minimal):
     print(token)   # 7FAW6I7OG3VNWLVAATGU4JQ5LXGQHVDR
 
 """
+
 from __future__ import annotations
 
 import base64
 import csv
 import hashlib
 import hmac
-import json
 import os
 import random
 import re
 import subprocess
-import sys
 import textwrap
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import List, Tuple
 
 # Attempt to import an external Double-Metaphone implementation.
 try:
     from metaphone import doublemetaphone as _dm
-except ModuleNotFoundError:         # library not installed → silent fallback
+except ModuleNotFoundError:  # library not installed → silent fallback
     _dm = None
 
 ###############################################################################
@@ -56,11 +55,11 @@ except ModuleNotFoundError:         # library not installed → silent fallback
 #
 ###############################################################################
 
-DEFAULT_CACHE = Path(os.environ.get("PT_DATA_HOME", "~/.patient_tokenizer_cache")).expanduser()
-SSA_URL       = "https://www.ssa.gov/oact/babynames/names.zip"
-CENSUS_URL    = (
-    "https://www2.census.gov/topics/genealogy/2010surnames/names.zip"
-)
+DEFAULT_CACHE = Path(
+    os.environ.get("PT_DATA_HOME", "~/.patient_tokenizer_cache")
+).expanduser()
+SSA_URL = "https://www.ssa.gov/oact/babynames/names.zip"
+CENSUS_URL = "https://www2.census.gov/topics/genealogy/2010surnames/names.zip"
 
 ###############################################################################
 #                                Nick-names                                   #
@@ -77,28 +76,28 @@ NICKNAMES = {
     "BETTY": "ELIZABETH",
     "CATHY": "CATHERINE",
     "KATHY": "KATHERINE",
-    "KATE":  "KATHERINE",
-    "KATY":  "KATHERINE",
-    "LIZ":   "ELIZABETH",
+    "KATE": "KATHERINE",
+    "KATY": "KATHERINE",
+    "LIZ": "ELIZABETH",
     "LIZZY": "ELIZABETH",
     "PEGGY": "MARGARET",
     # male
-    "AL":    "ALBERT",
-    "ALEX":  "ALEXANDER",
-    "BOB":   "ROBERT",
+    "AL": "ALBERT",
+    "ALEX": "ALEXANDER",
+    "BOB": "ROBERT",
     "BOBBY": "ROBERT",
     "CHRIS": "CHRISTOPHER",
-    "DAN":   "DANIEL",
+    "DAN": "DANIEL",
     "DANNY": "DANIEL",
-    "JACK":  "JOHN",
-    "JIM":   "JAMES",
+    "JACK": "JOHN",
+    "JIM": "JAMES",
     "JIMMY": "JAMES",
-    "JOE":   "JOSEPH",
-    "JOEY":  "JOSEPH",
-    "MIKE":  "MICHAEL",
-    "NICK":  "NICHOLAS",
-    "PAT":   "PATRICK",
-    "PETE":  "PETER",
+    "JOE": "JOSEPH",
+    "JOEY": "JOSEPH",
+    "MIKE": "MICHAEL",
+    "NICK": "NICHOLAS",
+    "PAT": "PATRICK",
+    "PETE": "PETER",
     "STEVE": "STEVEN",
 }
 
@@ -111,9 +110,7 @@ def _strip_accents(s: str) -> str:
     """À, é, ñ → A, E, N."""
     import unicodedata as ud
 
-    return "".join(
-        c for c in ud.normalize("NFKD", s) if ud.category(c) != "Mn"
-    )
+    return "".join(c for c in ud.normalize("NFKD", s) if ud.category(c) != "Mn")
 
 
 def _soundex(name: str) -> str:
@@ -125,8 +122,34 @@ def _soundex(name: str) -> str:
     if not name:
         return ""
 
-    codes = ("", "1", "2", "3", "4", "5", "6", "", "7", "", "", "4", "5", "5",
-             "", "1", "2", "6", "2", "3", "", "1", "", "2", "", "2")
+    codes = (
+        "",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "",
+        "7",
+        "",
+        "",
+        "4",
+        "5",
+        "5",
+        "",
+        "1",
+        "2",
+        "6",
+        "2",
+        "3",
+        "",
+        "1",
+        "",
+        "2",
+        "",
+        "2",
+    )
 
     first = name[0]
     tail = [codes[ord(c) - 65] for c in name[1:] if "A" <= c <= "Z"]
@@ -171,7 +194,7 @@ def _normalise_sex(sex: str | None) -> str:
 
 def _canonical_dob(dob: str | date | datetime | None) -> str:
     """
-    Return YYYY-MM-DD (zero-padded).  
+    Return YYYY-MM-DD (zero-padded).
     Accepts:
         • '1984-02-29'
         • '2/29/84'
@@ -230,7 +253,7 @@ def _secure_hash(msg: str, key: bytes | str, pepper: bytes | str | None = b"") -
     """
     HMAC-SHA256 → Base32   (first 160 bits = 32 chars)
 
-    • `key` is the secret salt (bytes or str)  
+    • `key` is the secret salt (bytes or str)
     • `pepper` may optionally be XOR'ed in by the caller
     """
     if pepper is None:
@@ -255,9 +278,9 @@ def _double_metaphone(name: str) -> Tuple[str, str]:
 #                         Bloom-filter helpers                       #
 ###############################################################################
 
-BLOOM_M = 256           # bits per Bloom filter (= 32 bytes → 64-hex-chars)
-BLOOM_K = 4             # hash functions
-_BLOOM_SALT = b"PT_BLOOM"   # constant domain separator; NOT the secret salt
+BLOOM_M = 256  # bits per Bloom filter (= 32 bytes → 64-hex-chars)
+BLOOM_K = 4  # hash functions
+_BLOOM_SALT = b"PT_BLOOM"  # constant domain separator; NOT the secret salt
 
 
 def _clean_name(name: str | None) -> str:
@@ -277,20 +300,19 @@ def _bloom_encode(cleaned_name: str) -> str:
         return "0" * (BLOOM_M // 4)
 
     # 2-grams; fall back to full string if len < 2
-    grams = (
-        [cleaned_name[i : i + 2] for i in range(len(cleaned_name) - 1)]
-        or [cleaned_name]
-    )
+    grams = [cleaned_name[i : i + 2] for i in range(len(cleaned_name) - 1)] or [
+        cleaned_name
+    ]
 
     bits = 0
     for gram in grams:
         for k in range(BLOOM_K):
             data = _BLOOM_SALT + gram.encode() + bytes([k])
-            h = hashlib.blake2b(data, digest_size=4).digest()   # 32-bit digest
+            h = hashlib.blake2b(data, digest_size=4).digest()  # 32-bit digest
             pos = int.from_bytes(h, "big") % BLOOM_M
             bits |= 1 << pos
 
-    return f"{bits:0{BLOOM_M//4}x}"
+    return f"{bits:0{BLOOM_M // 4}x}"
 
 
 ###############################################################################
@@ -306,6 +328,7 @@ class PatientTokenizer:
         token = tk.tokenize(first_name="Bob", last_name="Smith", dob="12/31/83")
 
     """
+
     __slots__ = ("salt", "pepper")
 
     def __init__(self, secret_salt: str | bytes, pepper: bytes | None = None):
@@ -322,7 +345,9 @@ class PatientTokenizer:
         elif isinstance(secret_salt, str) and secret_salt.startswith("env:"):
             self.salt = os.environ[secret_salt[4:]].encode()
         else:
-            self.salt = secret_salt.encode() if isinstance(secret_salt, str) else secret_salt
+            self.salt = (
+                secret_salt.encode() if isinstance(secret_salt, str) else secret_salt
+            )
 
         # Normalise pepper so it is ALWAYS bytes (never None/str)
         if pepper is None:
@@ -411,16 +436,16 @@ def _download_public_lists() -> Tuple[List[str], List[str]]:
     """
     import zipfile
 
-    here = Path(__file__).resolve().parent           # repo root dir
+    here = Path(__file__).resolve().parent  # repo root dir
 
     # ------------------------------------------------------------------ #
     #  Local resources shipped with the repo (preferred)                 #
     # ------------------------------------------------------------------ #
-    local_census_csv = here / "Names_2010Census.csv"    # surnames
-    local_ssa_txt    = here / "ssa_first_names.txt"     # optional first names
+    local_census_csv = here / "Names_2010Census.csv"  # surnames
+    local_ssa_txt = here / "ssa_first_names.txt"  # optional first names
 
     first_names: List[str] = []
-    last_names:  List[str] = []
+    last_names: List[str] = []
 
     # --- FIRST  NAMES -------------------------------------------------- #
     if local_ssa_txt.exists():
@@ -478,7 +503,7 @@ def _process_ssa(tmp_zip: Path):
     """
     Keep top 25 K names for speed; write into same path as plain text.
     """
-    import zipfile, io
+    import zipfile
 
     names: dict[str, int] = defaultdict(int)
 
@@ -498,7 +523,8 @@ def _process_ssa(tmp_zip: Path):
 
 
 def _process_census(tmp_zip: Path):
-    import zipfile, io
+    import io
+    import zipfile
 
     names: List[str] = []
     with zipfile.ZipFile(tmp_zip) as zf:
@@ -515,11 +541,12 @@ def _process_census(tmp_zip: Path):
             for row in rdr:
                 # header can be "name" or "NAME" ‒ handle both gracefully
                 surname = row.get("NAME") or row.get("name")
-                if surname:                                  # safety check
+                if surname:  # safety check
                     names.append(surname.upper())
 
     with open(tmp_zip, "w") as out:
         out.writelines([f"{n}\n" for n in names])
+
 
 # INJECT HUMAN ENTRY ERRORS
 def _introduce_errors(name: str) -> str:
@@ -594,9 +621,7 @@ def evaluate(n_samples: int = 10_000, seed: int = 42):
 
         successes += int(truth == token2)
 
-    print(
-        f"[Evaluation]  n={n_samples:,}   recall={successes / n_samples:.3%}"
-    )
+    print(f"[Evaluation]  n={n_samples:,}   recall={successes / n_samples:.3%}")
 
 
 ###############################################################################
@@ -615,17 +640,19 @@ def process_csv(input_csv: str, output_csv: str, salt: str):
             raise KeyError(f"Environment variable '{salt[4:]}' is not set.")
 
     tk = PatientTokenizer(secret_salt=salt)
-    with open(input_csv, newline='', encoding='utf-8') as infile, \
-         open(output_csv, mode='w', newline='', encoding='utf-8') as outfile:
+    with (
+        open(input_csv, newline="", encoding="utf-8") as infile,
+        open(output_csv, mode="w", newline="", encoding="utf-8") as outfile,
+    ):
         reader = csv.DictReader(infile)
-        fieldnames = reader.fieldnames + ['token']
+        fieldnames = reader.fieldnames + ["token"]
         writer = csv.DictWriter(outfile, fieldnames=fieldnames)
         writer.writeheader()
 
         for row in reader:
-            name = row.get('name', '')
+            name = row.get("name", "")
             token = tk.tokenize(first_name=name, last_name=None, dob=None)
-            row['token'] = token
+            row["token"] = token
             writer.writerow(row)
 
 
@@ -670,9 +697,15 @@ def _cli():
     ev.add_argument("--n", type=int, default=10_000)
 
     csv_parser = sub.add_parser("process_csv", help="Process a CSV file")
-    csv_parser.add_argument("--input_csv", required=True, help="Path to the input CSV file")
-    csv_parser.add_argument("--output_csv", required=True, help="Path to the output CSV file")
-    csv_parser.add_argument("--salt", default="env:PT_SALT", help="Secret salt for tokenization")
+    csv_parser.add_argument(
+        "--input_csv", required=True, help="Path to the input CSV file"
+    )
+    csv_parser.add_argument(
+        "--output_csv", required=True, help="Path to the output CSV file"
+    )
+    csv_parser.add_argument(
+        "--salt", default="env:PT_SALT", help="Secret salt for tokenization"
+    )
 
     args = p.parse_args()
 
